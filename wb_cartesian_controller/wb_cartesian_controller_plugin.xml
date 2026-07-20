@@ -1,0 +1,7 @@
+<library path="wb_cartesian_controller">
+  <class name="wb_cartesian_controller/WbCartesianController" type="wb_cartesian_controller::WbCartesianController" base_class_type="controller_interface::ControllerInterface">
+  <description>
+    Whole Body Cartesian Controller
+  </description>
+  </class>
+</library>
