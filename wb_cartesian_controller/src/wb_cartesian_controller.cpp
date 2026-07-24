@@ -31,7 +31,7 @@ controller_interface::CallbackReturn WbCartesianController::on_init()
   pinocchio::urdf::buildModel(urdf_path, pinocchio::JointModelPlanar(), model_);
   data_ = pinocchio::Data(model_);
   const auto ee_id = model_.getFrameId(param_.end_effector_frame);
-  RCLCPP_INFO(get_node()->get_logger(), "End effector frame ID: %d\n", ee_id);
+  RCLCPP_INFO(get_node()->get_logger(), "End effector frame ID: %ld\n", ee_id);
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
