@@ -35,7 +35,7 @@ add_library(wb_cartesian_controller SHARED
 
 target_include_directories(wb_cartesian_controller PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include/joint_trajectory_controller>
+  $<INSTALL_INTERFACE:include/wb_cartesian_controller>
 )
 target_link_libraries(wb_cartesian_controller PUBLIC
                       wb_cartesian_controller_parameters
@@ -56,6 +56,18 @@ target_link_libraries(wb_cartesian_controller PUBLIC
                       ${control_msgs_TARGETS})
 
 pluginlib_export_plugin_description_file(controller_interface wb_cartesian_controller_plugin.xml)
+
+install(
+  TARGETS wb_cartesian_controller
+  RUNTIME DESTINATION bin
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+)
+
+install(
+  DIRECTORY include/
+  DESTINATION include
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

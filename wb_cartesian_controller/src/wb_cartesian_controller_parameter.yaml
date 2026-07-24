@@ -44,6 +44,14 @@ wb_cartesian_controller:
       subset_of<>: [["position", "velocity", "acceleration",]],
     }
   }
+  urdf_path: {
+    type: string,
+    default_value: "",
+    description: "Path to the URDF file of the robot",
+    read_only: true,
+    validation: {
+    }
+  }
   base_frame: {
     type: string,
     default_value: "",

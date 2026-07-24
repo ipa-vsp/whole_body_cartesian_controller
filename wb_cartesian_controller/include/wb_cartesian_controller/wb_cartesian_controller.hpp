@@ -32,13 +32,14 @@ class WbCartesianController : public controller_interface::ControllerInterface
 public:
   WbCartesianController();
   controller_interface::CallbackReturn on_init() override;
-  controller_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State & previous_state) override;
-  controller_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State & previous_state) override;
-  controller_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State & previous_state) override;
-  controller_interface::return_type update(const rclcpp::Time & time, const rclcpp::Duration & period) override;
-  controller_interface::return_type on_command_received(const trajectory_msgs::msg::JointTrajectory & command);
+  controller_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state) override;
+  controller_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
+  controller_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
+  controller_interface::return_type update(const rclcpp::Time& time, const rclcpp::Duration& period) override;
+  controller_interface::return_type on_command_received(const trajectory_msgs::msg::JointTrajectory& command);
   controller_interface::InterfaceConfiguration command_interface_configuration() const override;
   controller_interface::InterfaceConfiguration state_interface_configuration() const override;
+
 private:
   realtime_tools::RealtimeBuffer<std::shared_ptr<trajectory_msgs::msg::JointTrajectory>> rt_command_buffer_;
   std::vector<hardware_interface::LoanedCommandInterface> joint_command_interfaces_;
@@ -53,7 +54,10 @@ private:
   // Pinocchio model and data
   pinocchio::Model model_;
   pinocchio::Data data_;
-};
-}
 
-#endif // WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
+  std::shared_ptr<ParamListener> param_listener_;
+  Params param_;
+};
+}  // namespace wb_cartesian_controller
+
+#endif  // WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
