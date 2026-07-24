@@ -1,4 +1,4 @@
-joint_trajectory_controller:
+wb_cartesian_controller:
   joints: {
     type: string_array,
     default_value: [],
@@ -31,7 +31,6 @@ joint_trajectory_controller:
       unique<>: null,
       size_gt<>: [0],
       subset_of<>: [["position", "velocity", "acceleration", "effort",]],
-      "joint_trajectory_controller::command_interface_type_combinations": null,
     }
   }
   state_interfaces: {
@@ -43,7 +42,6 @@ joint_trajectory_controller:
       unique<>: null,
       size_gt<>: [0],
       subset_of<>: [["position", "velocity", "acceleration",]],
-      "joint_trajectory_controller::state_interface_type_combinations": null,
     }
   }
   base_frame: {
@@ -52,7 +50,6 @@ joint_trajectory_controller:
     description: "Robot base frame name (e.g. world or odom)",
     read_only: true,
     validation: {
-      not_empty: null,
     }
   }
   end_effector_frame: {
@@ -61,7 +58,6 @@ joint_trajectory_controller:
     description: "Robot end effector frame name (e.g. tool0 or tip)",
     read_only: true,
     validation: {
-      not_empty: null,
     }
   }
   speed_scaling: {

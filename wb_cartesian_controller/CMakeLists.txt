@@ -19,6 +19,10 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(realtime_tools REQUIRED)
+find_package(angles REQUIRED)
+find_package(rsl REQUIRED)
+find_package(urdf REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 
 generate_parameter_library(
     wb_cartesian_controller_parameters
@@ -46,7 +50,7 @@ target_link_libraries(wb_cartesian_controller PUBLIC
                       rsl::rsl
                       urdf::urdf
                       angles::angles
-                      pinocchio::pinoccio
+                      pinocchio::pinocchio
                       proxsuite::proxsuite
                       ${trajectory_msgs_TARGETS}
                       ${control_msgs_TARGETS})
