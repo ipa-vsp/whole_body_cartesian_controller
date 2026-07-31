@@ -1,14 +1,19 @@
 #ifndef WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
 #define WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
 
+#include <memory>
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/multibody/joint/joints.hpp>
 #include <pinocchio/multibody/data.hpp>
 #include <pinocchio/multibody/model.hpp>
+#include <pinocchio/algorithm/kinematics.hpp>
+#include <pinocchio/algorithm/frames.hpp>
 
 #include "controller_interface/controller_interface.hpp"
 #include "hardware_interface/loaned_command_interface.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "pinocchio/multibody/fwd.hpp"
+#include "pinocchio/spatial/fwd.hpp"
 #include "rclcpp/duration.hpp"
 #include "rclcpp/subscription.hpp"
 #include "rclcpp/time.hpp"
@@ -52,11 +57,19 @@ private:
   std::vector<double> joint_accelerations_;
 
   // Pinocchio model and data
-  pinocchio::Model model_;
-  pinocchio::Data data_;
+  std::shared_ptr<pinocchio::Model> model_;
+  std::shared_ptr<pinocchio::Data> data_;
+  pinocchio::FrameIndex ee_id;
+  pinocchio::FrameIndex base_id;
+  pinocchio::Data::Matrix6x J_frame;
+  Eigen::MatrixXd J_task;
+  Eigen::Matrix<double, 6, 6> Jlog;
+  Eigen::Matrix<double, 6, 1> err;
 
   std::shared_ptr<ParamListener> param_listener_;
   Params param_;
+
+  void computeTask(const Eigen::VectorXd& q, const pinocchio::SE3& X_des);
 };
 }  // namespace wb_cartesian_controller
 
