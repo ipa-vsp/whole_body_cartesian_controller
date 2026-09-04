@@ -68,6 +68,97 @@ wb_cartesian_controller:
     validation: {
     }
   }
+  nonholonomic_base: {
+    type: bool,
+    default_value: true,
+    description: "If true the QP enforces the unicycle constraint on the planar
+      root joint: the body-frame lateral velocity is pinned to zero.
+      Requires a root joint with 3 velocity dofs (planar).",
+    read_only: true,
+  }
+  task:
+    weights: {
+      type: double_array,
+      default_value: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+      description: "Diagonal of the 6x6 task weight matrix W, ordered as the
+        se(3) log vector: [linear_x, linear_y, linear_z, angular_x, angular_y, angular_z].",
+      validation: {
+        fixed_size<>: [6],
+        lower_element_bounds<>: [0.0],
+      }
+    }
+    gain: {
+      type: double,
+      default_value: 1.0,
+      description: "Proportional task gain alpha [1/s]. The QP drives the
+        Cartesian error along edot = -alpha * err.",
+      validation: {
+        gt<>: [0.0],
+      }
+    }
+    lm_damping: {
+      type: double,
+      default_value: 1.0e-6,
+      description: "Levenberg-Marquardt damping factor. The damping added to the
+        Hessian diagonal is lm_damping * (err' W err), so it vanishes as the task
+        converges and only regularises near singularities.",
+      validation: {
+        gt_eq<>: [0.0],
+      }
+    }
+  regularization:
+    base: {
+      type: double,
+      default_value: 1.0e-2,
+      description: "Velocity regularisation weight on the base dofs. Larger values
+        make the base move more reluctantly than the arm.",
+      validation: {
+        gt_eq<>: [0.0],
+      }
+    }
+    arm: {
+      type: double,
+      default_value: 1.0e-4,
+      description: "Velocity regularisation weight on the arm dofs.",
+      validation: {
+        gt_eq<>: [0.0],
+      }
+    }
+  limits:
+    base_linear_velocity: {
+      type: double,
+      default_value: 0.5,
+      description: "Maximum base linear velocity [m/s] used as the QP box bound.",
+      validation: {
+        gt<>: [0.0],
+      }
+    }
+    base_angular_velocity: {
+      type: double,
+      default_value: 1.0,
+      description: "Maximum base angular velocity [rad/s] used as the QP box bound.",
+      validation: {
+        gt<>: [0.0],
+      }
+    }
+    joint_velocity: {
+      type: double,
+      default_value: 1.0,
+      description: "Fallback maximum joint velocity [rad/s or m/s] for the arm dofs.
+        The URDF velocity limit is used instead whenever it is finite and tighter.",
+      validation: {
+        gt<>: [0.0],
+      }
+    }
+    position_margin: {
+      type: double,
+      default_value: 0.05,
+      description: "Safety margin [rad or m] kept away from the joint position
+        limits when the velocity box is tightened.",
+      validation: {
+        gt_eq<>: [0.0],
+      }
+    }
   speed_scaling: {
 
     initial_scaling_factor: {

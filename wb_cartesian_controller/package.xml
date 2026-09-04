@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>coal</depend>
   <depend>pinocchio</depend>
   <depend>proxsuite</depend>  
   <depend>controller_interface</depend>

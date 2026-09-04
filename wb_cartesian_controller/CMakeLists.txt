@@ -22,6 +22,7 @@ find_package(realtime_tools REQUIRED)
 find_package(angles REQUIRED)
 find_package(rsl REQUIRED)
 find_package(urdf REQUIRED)
+find_package(coal REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
 generate_parameter_library(
