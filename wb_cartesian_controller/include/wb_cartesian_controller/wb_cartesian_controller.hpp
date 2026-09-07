@@ -52,14 +52,31 @@ public:
 
 private:
   realtime_tools::RealtimeBuffer<std::shared_ptr<trajectory_msgs::msg::JointTrajectory>> rt_command_buffer_;
-  std::vector<hardware_interface::LoanedCommandInterface> joint_command_interfaces_;
-  std::vector<hardware_interface::LoanedStateInterface> joint_state_interfaces_;
-  std::vector<std::string> joint_names_;
-  std::vector<std::string> state_interfaces_;
-  std::vector<std::string> command_interfaces_;
+
+  // ---- ros2_control interfaces ---------------------------------------------
+  // The loaned handles themselves live in the base class vectors
+  // ControllerInterfaceBase::state_interfaces_ / ::command_interfaces_ and
+  // arrive in exactly the order listed by *_interface_configuration() below,
+  // i.e. joint-major: handle index (i * types.size() + k) is joint i's
+  // interface type k. Nothing here may be named state_interfaces_ /
+  // command_interfaces_, which would shadow those base members.
+  std::vector<std::string> joint_names_;              // param 'joints'
+  std::vector<std::string> command_joint_names_;      // 'command_joints', else 'joints'
+  std::vector<std::string> state_interface_types_;    // e.g. {position, velocity}
+  std::vector<std::string> command_interface_types_;  // e.g. {position}
   std::vector<double> joint_positions_;
   std::vector<double> joint_velocities_;
   std::vector<double> joint_accelerations_;
+
+  // Pinocchio (q, v) index of every claimed joint, resolved in on_configure().
+  // The model carries the planar root joint first, so these are NOT identities:
+  // they are what maps an interface handle onto a column of q_ / v_.
+  std::vector<Eigen::Index> state_joint_q_index_;
+  std::vector<Eigen::Index> state_joint_v_index_;
+  std::vector<Eigen::Index> command_joint_q_index_;
+  std::vector<Eigen::Index> command_joint_v_index_;
+  bool has_speed_scaling_state_{ false };
+  bool has_speed_scaling_command_{ false };
 
   // Pinocchio model and data
   std::shared_ptr<pinocchio::Model> model_;
@@ -114,6 +131,8 @@ private:
 
   void computeTask(const Eigen::VectorXd& q, const pinocchio::SE3& X_des);
   void computeQP(const Eigen::VectorXd& q, double dt);
+  bool resolveJointIndices(const std::vector<std::string>& joint_names, std::vector<Eigen::Index>& q_index,
+                           std::vector<Eigen::Index>& v_index);
 };
 }  // namespace wb_cartesian_controller
 
