@@ -48,11 +48,119 @@ controller_interface::CallbackReturn WbCartesianController::on_init()
 controller_interface::CallbackReturn
 WbCartesianController::on_configure(const rclcpp_lifecycle::State& /*previous_state*/)
 {
+  param_ = param_listener_->get_params();
+
   ee_id = model_->getFrameId(param_.end_effector_frame);
   RCLCPP_INFO(get_node()->get_logger(), "End effector name: %s frame ID: %ld\n", param_.end_effector_frame.c_str(),
               ee_id);
   RCLCPP_INFO(get_node()->get_logger(), "Base frame: %s", param_.base_frame.c_str());
+
+  // ---- Resolve the interfaces this controller will claim -------------------
+  // 'joints' are the joints the controller reads feedback from; 'command_joints'
+  // (a subset, defaulting to 'joints') are the ones it writes to.
+  joint_names_ = param_.joints;
+  command_joint_names_ = param_.command_joints.empty() ? param_.joints : param_.command_joints;
+  state_interface_types_ = param_.state_interfaces;
+  command_interface_types_ = param_.command_interfaces;
+
+  for (const auto& joint_name : command_joint_names_)
+  {
+    if (std::find(joint_names_.begin(), joint_names_.end(), joint_name) == joint_names_.end())
+    {
+      RCLCPP_ERROR(get_node()->get_logger(), "command_joints entry '%s' is not listed in 'joints'", joint_name.c_str());
+      return controller_interface::CallbackReturn::ERROR;
+    }
+  }
+
+  // q_ is rebuilt from the position state interfaces on every tick, so position
+  // feedback is mandatory whatever else the hardware exports.
+  if (std::find(state_interface_types_.begin(), state_interface_types_.end(), hardware_interface::HW_IF_POSITION) ==
+      state_interface_types_.end())
+  {
+    RCLCPP_ERROR(get_node()->get_logger(), "'%s' is required in state_interfaces", hardware_interface::HW_IF_POSITION);
+    return controller_interface::CallbackReturn::ERROR;
+  }
+
+  // The QP resolves a generalised velocity v and integrates it into q_next_, so
+  // the only two things this controller can write are a position and a velocity.
+  // Acceleration / effort pass the parameter validation but have no source here.
+  for (const auto& interface_type : command_interface_types_)
+  {
+    if (interface_type != hardware_interface::HW_IF_POSITION && interface_type != hardware_interface::HW_IF_VELOCITY)
+    {
+      RCLCPP_ERROR(get_node()->get_logger(), "command_interfaces entry '%s' is not supported; use '%s' and/or '%s'",
+                   interface_type.c_str(), hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY);
+      return controller_interface::CallbackReturn::ERROR;
+    }
+  }
+
+  // Every claimed joint must exist in the Pinocchio model, otherwise the handles
+  // could not be mapped onto q_ / v_ and the QP output would silently go nowhere.
+  if (!resolveJointIndices(joint_names_, state_joint_q_index_, state_joint_v_index_) ||
+      !resolveJointIndices(command_joint_names_, command_joint_q_index_, command_joint_v_index_))
+  {
+    return controller_interface::CallbackReturn::ERROR;
+  }
+
+  joint_positions_.assign(joint_names_.size(), 0.0);
+  joint_velocities_.assign(joint_names_.size(), 0.0);
+  joint_accelerations_.assign(joint_names_.size(), 0.0);
+
+  has_speed_scaling_state_ = !param_.speed_scaling.state_interface.empty();
+  has_speed_scaling_command_ = !param_.speed_scaling.command_interface.empty();
+
+  RCLCPP_INFO(get_node()->get_logger(),
+              "Claiming %zu state interface(s) over %zu joint(s) and %zu command interface(s) over %zu joint(s)",
+              state_interface_configuration().names.size(), joint_names_.size(),
+              command_interface_configuration().names.size(), command_joint_names_.size());
+
   return controller_interface::CallbackReturn::SUCCESS;
+}
+
+/**
+ * Maps ros2_control joint names onto their Pinocchio configuration / velocity
+ * indices.
+ *
+ * The model built in on_init() has the mobile base as its root joint, so the
+ * arm dofs do not start at index 0 and the ros2_control ordering is unrelated
+ * to the Pinocchio one. These index vectors are what lets update() scatter the
+ * position state interfaces into q_ and gather q_next_ / v_ back out again.
+ *
+ * @param joint_names  Joint names to resolve, in interface order.
+ * @param q_index      [out] idx_q of each joint (size joint_names.size()).
+ * @param v_index      [out] idx_v of each joint (size joint_names.size()).
+ * @return false, having logged the offending joint, if a name is unknown to the
+ *         model or is not a 1-dof joint; true otherwise.
+ */
+bool WbCartesianController::resolveJointIndices(const std::vector<std::string>& joint_names,
+                                                std::vector<Eigen::Index>& q_index, std::vector<Eigen::Index>& v_index)
+{
+  q_index.clear();
+  v_index.clear();
+  q_index.reserve(joint_names.size());
+  v_index.reserve(joint_names.size());
+
+  for (const auto& joint_name : joint_names)
+  {
+    if (!model_->existJointName(joint_name))
+    {
+      RCLCPP_ERROR(get_node()->get_logger(), "Joint '%s' is not in the model built from '%s'", joint_name.c_str(),
+                   param_.urdf_path.c_str());
+      return false;
+    }
+    const auto& joint = model_->joints[model_->getJointId(joint_name)];
+    if (joint.nq() != 1 || joint.nv() != 1)
+    {
+      // A ros2_control interface is one scalar; multi-dof joints (and the
+      // planar root) have no single handle to be driven through.
+      RCLCPP_ERROR(get_node()->get_logger(), "Joint '%s' has nq=%d nv=%d; only 1-dof joints can be claimed",
+                   joint_name.c_str(), joint.nq(), joint.nv());
+      return false;
+    }
+    q_index.push_back(static_cast<Eigen::Index>(joint.idx_q()));
+    v_index.push_back(static_cast<Eigen::Index>(joint.idx_v()));
+  }
+  return true;
 }
 
 controller_interface::CallbackReturn
@@ -190,17 +298,67 @@ WbCartesianController::on_command_received(const trajectory_msgs::msg::JointTraj
   return controller_interface::return_type::OK;
 }
 
+/**
+ * Interfaces written by the controller: <joint>/<interface> for every command
+ * joint, joint-major, plus the optional speed scaling handle.
+ *
+ * INDIVIDUAL (not INDIVIDUAL_BEST_EFFORT) so that activation fails loudly if
+ * the hardware does not export one of them, and so that the loaned handles come
+ * back in exactly this order: index (i * command_interface_types_.size() + k)
+ * is command_joint_names_[i] / command_interface_types_[k].
+ *
+ * Only the arm is claimed here. The QP also solves for the 3 planar base dofs
+ * (v_.head(3)), which this robot drives outside ros2_control over /cmd_vel;
+ * putting them on a command interface would need a base joint in the
+ * <ros2_control> tag and a parameter naming it.
+ */
 controller_interface::InterfaceConfiguration WbCartesianController::command_interface_configuration() const
 {
   controller_interface::InterfaceConfiguration conf;
-  conf.type = controller_interface::interface_configuration_type::NONE;
+  conf.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+  conf.names.reserve(command_joint_names_.size() * command_interface_types_.size() + 1U);
+
+  for (const auto& joint_name : command_joint_names_)
+  {
+    for (const auto& interface_type : command_interface_types_)
+    {
+      conf.names.push_back(joint_name + "/" + interface_type);
+    }
+  }
+
+  // Already fully qualified (<component>/<interface>), so it is appended as is.
+  if (has_speed_scaling_command_)
+  {
+    conf.names.push_back(param_.speed_scaling.command_interface);
+  }
   return conf;
 }
 
+/**
+ * Interfaces read by the controller: <joint>/<interface> for every joint,
+ * joint-major, plus the optional speed scaling handle. Same ordering guarantee
+ * as command_interface_configuration(): index
+ * (i * state_interface_types_.size() + k) is joint_names_[i] /
+ * state_interface_types_[k].
+ */
 controller_interface::InterfaceConfiguration WbCartesianController::state_interface_configuration() const
 {
   controller_interface::InterfaceConfiguration conf;
-  conf.type = controller_interface::interface_configuration_type::NONE;
+  conf.type = controller_interface::interface_configuration_type::INDIVIDUAL;
+  conf.names.reserve(joint_names_.size() * state_interface_types_.size() + 1U);
+
+  for (const auto& joint_name : joint_names_)
+  {
+    for (const auto& interface_type : state_interface_types_)
+    {
+      conf.names.push_back(joint_name + "/" + interface_type);
+    }
+  }
+
+  if (has_speed_scaling_state_)
+  {
+    conf.names.push_back(param_.speed_scaling.state_interface);
+  }
   return conf;
 }
 
