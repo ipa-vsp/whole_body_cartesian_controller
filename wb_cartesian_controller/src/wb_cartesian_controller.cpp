@@ -81,6 +81,14 @@ WbCartesianController::on_configure(const rclcpp_lifecycle::State& /*previous_st
     return controller_interface::CallbackReturn::ERROR;
   }
 
+  // Where the position handle of joint i sits in state_interfaces_. Resolved
+  // here so the real-time path never has to search state_interface_types_ (and
+  // never has to deal with the past-the-end index a failed search returns).
+  state_interface_stride_ = state_interface_types_.size();
+  position_state_offset_ = static_cast<std::size_t>(
+      std::find(state_interface_types_.begin(), state_interface_types_.end(), hardware_interface::HW_IF_POSITION) -
+      state_interface_types_.begin());
+
   // The QP resolves a generalised velocity v and integrates it into q_next_, so
   // the only two things this controller can write are a position and a velocity.
   // Acceleration / effort pass the parameter validation but have no source here.
@@ -102,12 +110,52 @@ WbCartesianController::on_configure(const rclcpp_lifecycle::State& /*previous_st
     return controller_interface::CallbackReturn::ERROR;
   }
 
+  // update() only refreshes the q_ entries of the joints claimed above (plus the
+  // base block, which comes from odometry). Any other actuated joint in the model
+  // keeps the neutral value it was given in on_activate() for the whole run, which
+  // silently biases the forward kinematics and hence the task Jacobian.
+  for (std::size_t j = 1; j < model_->joints.size(); ++j)
+  {
+    const auto& joint = model_->joints[j];
+    if (joint.nq() != 1 || joint.nv() != 1)
+    {
+      continue;  // multi-dof joints: the planar root is driven from /odom instead
+    }
+    if (std::find(joint_names_.begin(), joint_names_.end(), model_->names[j]) == joint_names_.end())
+    {
+      RCLCPP_WARN(get_node()->get_logger(),
+                  "Model joint '%s' is not listed in 'joints'; it stays at its neutral value in q_",
+                  model_->names[j].c_str());
+    }
+  }
+
   joint_positions_.assign(joint_names_.size(), 0.0);
   joint_velocities_.assign(joint_names_.size(), 0.0);
   joint_accelerations_.assign(joint_names_.size(), 0.0);
 
   has_speed_scaling_state_ = !param_.speed_scaling.state_interface.empty();
   has_speed_scaling_command_ = !param_.speed_scaling.command_interface.empty();
+
+  rt_base_configuration_.writeFromNonRT({ 0.0, 0.0, 1.0, 0.0 });
+  odom_subscriber_ = get_node()->create_subscription<OdomType>(
+      "/odom", rclcpp::SensorDataQoS().keep_last(1),
+      [this](const OdomType::ConstSharedPtr& msg)
+      {
+        const auto& position = msg->pose.pose.position;
+        const auto& orientation = msg->pose.pose.orientation;
+        const double cos_yaw = orientation.w * orientation.w + orientation.x * orientation.x -
+                               orientation.y * orientation.y - orientation.z * orientation.z;
+        const double sin_yaw = 2.0 * (orientation.w * orientation.z + orientation.x * orientation.y);
+        const double norm = std::hypot(cos_yaw, sin_yaw);
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(norm) || norm <= 0.0)
+        {
+          return;
+        }
+        // Normalize the projected heading to keep the planar configuration on SE(2).
+        rt_base_configuration_.writeFromNonRT(
+            { position.x, position.y, cos_yaw / norm, sin_yaw / norm });
+        base_configuration_received_.store(true, std::memory_order_release);
+      });
 
   RCLCPP_INFO(get_node()->get_logger(),
               "Claiming %zu state interface(s) over %zu joint(s) and %zu command interface(s) over %zu joint(s)",
@@ -171,19 +219,38 @@ WbCartesianController::on_activate(const rclcpp_lifecycle::State& /*previous_sta
   // ---- Problem dimensions -------------------------------------------------
   // The root joint is the mobile base (a planar joint, see on_init), everything
   // after it is the arm. The QP decision variable is v = q̇ ∈ ℝ^nv.
+  if (model_->joints.size() < 2)
+  {
+    RCLCPP_ERROR(get_node()->get_logger(), "Model built from '%s' has no joint after the universe",
+                 param_.urdf_path.c_str());
+    return controller_interface::CallbackReturn::ERROR;
+  }
+
   n_v_ = model_->nv;
-  n_base_ = (model_->joints.size() > 1) ? static_cast<Eigen::Index>(model_->joints[1].nv()) : 0;
+  n_base_ = static_cast<Eigen::Index>(model_->joints[1].nv());
   n_arm_ = n_v_ - n_base_;
 
-  nonholonomic_ = param_.nonholonomic_base;
-  if (nonholonomic_ && n_base_ != 3)
+  // update() copies the odometry buffer straight into the head of q_, so the
+  // root joint must be the planar base that on_init() injects: 4 configuration
+  // values (x, y, cos theta, sin theta) at index 0 and 3 velocity dofs. Checking
+  // it here turns a silent out-of-range write into a refused activation if the
+  // root joint model ever changes.
+  base_q_index_ = static_cast<Eigen::Index>(model_->joints[1].idx_q());
+  base_nq_ = static_cast<Eigen::Index>(model_->joints[1].nq());
+  constexpr Eigen::Index kBaseConfigurationSize = 4;  // size of rt_base_configuration_
+  if (base_q_index_ != 0 || base_nq_ != kBaseConfigurationSize || n_base_ != 3)
   {
     RCLCPP_ERROR(get_node()->get_logger(),
-                 "nonholonomic_base is set but the root joint has %ld velocity dofs (3 expected for "
-                 "a planar base)",
+                 "Root joint '%s' has idx_q=%ld nq=%ld nv=%ld; a planar base (idx_q=0, nq=4, nv=3) is required "
+                 "to receive the odometry configuration",
+                 model_->names[1].c_str(), static_cast<long>(base_q_index_), static_cast<long>(base_nq_),
                  static_cast<long>(n_base_));
     return controller_interface::CallbackReturn::ERROR;
   }
+
+  // n_base_ == 3 is already guaranteed by the root-joint check above, which
+  // applies whether or not the unicycle constraint is enabled.
+  nonholonomic_ = param_.nonholonomic_base;
   n_eq_ = nonholonomic_ ? 1 : 0;
 
   // ---- Cost / task weights ------------------------------------------------
@@ -257,6 +324,9 @@ WbCartesianController::on_activate(const rclcpp_lifecycle::State& /*previous_sta
   dq_.setZero(n_v_);
   q_ = pinocchio::neutral(*model_);
   q_next_ = q_;
+  // Require a fresh measurement for this activation rather than trusting one
+  // that arrived while the controller was inactive.
+  base_configuration_received_.store(false, std::memory_order_release);
   X_des_ = pinocchio::SE3::Identity();
 
   qp_ = std::make_unique<proxsuite::proxqp::dense::QP<double>>(
@@ -264,6 +334,13 @@ WbCartesianController::on_activate(const rclcpp_lifecycle::State& /*previous_sta
   qp_->settings.verbose = false;
   qp_->settings.compute_timings = false;
   qp_initialized_ = false;
+
+  const auto node = get_node();
+  const auto parameter_names = node->list_parameters({}, 0).names;
+  for (const auto& parameter : node->get_parameters(parameter_names))
+  {
+    RCLCPP_INFO(node->get_logger(), "%s: %s", parameter.get_name().c_str(), parameter.value_to_string().c_str());
+  }
 
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -283,8 +360,41 @@ controller_interface::return_type WbCartesianController::update(const rclcpp::Ti
     return controller_interface::return_type::OK;
   }
 
-  // TODO(wb_cartesian_controller): fill q_ from the state interfaces and X_des_
-  // from the command buffer; both are still placeholders (neutral / identity).
+  // ---- Assemble q_, the configuration everything downstream is evaluated at --
+  // q_ = [base block from /odom ; arm dofs from the position state interfaces].
+  // Both halves have to be valid before the QP runs: it linearises the task at
+  // q_, so a stale or partially written q_ produces a plausible-looking velocity
+  // that steers from a pose the robot is not in.
+  if (!base_configuration_received_.load(std::memory_order_acquire))
+  {
+    // Not an error - odometry simply has not arrived yet. Holding is safer than
+    // solving against the identity pose the buffer is seeded with, which would
+    // read as a large, entirely fictitious base displacement.
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                         "No odometry received yet; holding until the base configuration is known");
+    return controller_interface::return_type::OK;
+  }
+
+  const auto& base_configuration = *rt_base_configuration_.readFromRT();
+  std::copy_n(base_configuration.begin(), static_cast<std::size_t>(base_nq_), q_.data() + base_q_index_);
+
+  for (std::size_t i = 0; i < state_joint_q_index_.size(); ++i)
+  {
+    const auto position = state_interfaces_[i * state_interface_stride_ + position_state_offset_].get_optional();
+    if (!position || !std::isfinite(*position))
+    {
+      // q_ is left partially updated on purpose: the tick is abandoned before it
+      // is read, and the controller is deactivated by the ERROR return.
+      RCLCPP_ERROR_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                            "Joint '%s' reported %s position; aborting the update", joint_names_[i].c_str(),
+                            position ? "a non-finite" : "no");
+      return controller_interface::return_type::ERROR;
+    }
+    joint_positions_[i] = *position;
+    q_[state_joint_q_index_[i]] = *position;
+  }
+
+  // TODO(wb_cartesian_controller): fill X_des_ from the command buffer; target remains identity.
   computeTask(q_, X_des_);
   computeQP(q_, dt);
 

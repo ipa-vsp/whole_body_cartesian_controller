@@ -1,6 +1,8 @@
 #ifndef WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
 #define WB_CARTESIAN_CONTROLLER_WB_CARTESIAN_CONTROLLER_HPP
 
+#include <array>
+#include <atomic>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -28,8 +30,12 @@
 #include "realtime_tools/realtime_buffer.hpp"
 #include "realtime_tools/realtime_publisher.hpp"
 #include "realtime_tools/realtime_server_goal_handle.hpp"
+#include "realtime_tools/realtime_thread_safe_box.hpp"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
+
+#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 
 #include <wb_cartesian_controller/wb_cartesian_controller_parameters.hpp>
 
@@ -37,6 +43,9 @@ using namespace std::chrono_literals;
 
 namespace wb_cartesian_controller
 {
+  using OdomType = nav_msgs::msg::Odometry;
+  using CmdVelType = geometry_msgs::msg::TwistStamped;
+
 class WbCartesianController : public controller_interface::ControllerInterface
 {
 public:
@@ -75,6 +84,18 @@ private:
   std::vector<Eigen::Index> state_joint_v_index_;
   std::vector<Eigen::Index> command_joint_q_index_;
   std::vector<Eigen::Index> command_joint_v_index_;
+
+  // Layout of state_interfaces_, resolved once in on_configure() so that the
+  // real-time path indexes the handles instead of searching for the position
+  // type on every tick: handle (i * stride + offset) is joint i's position.
+  std::size_t state_interface_stride_{ 0 };
+  std::size_t position_state_offset_{ 0 };
+
+  // Slice of q_ owned by the mobile base, resolved in on_activate(). update()
+  // copies the odometry-derived configuration into [base_q_index_, +base_nq_).
+  Eigen::Index base_q_index_{ 0 };
+  Eigen::Index base_nq_{ 0 };
+
   bool has_speed_scaling_state_{ false };
   bool has_speed_scaling_command_{ false };
 
@@ -128,6 +149,20 @@ private:
 
   std::shared_ptr<ParamListener> param_listener_;
   Params param_;
+
+  // Subscriber and publisher
+  realtime_tools::RealtimeBuffer<std::array<double, 4>> rt_base_configuration_{
+    std::array<double, 4>{ 0.0, 0.0, 1.0, 0.0 }
+  };
+  // The buffer above is seeded with the identity pose, which is indistinguishable
+  // from a real measurement. This says whether /odom has actually been heard.
+  std::atomic<bool> base_configuration_received_{ false };
+  rclcpp::Subscription<OdomType>::SharedPtr odom_subscriber_;
+
+  realtime_tools::RealtimeThreadSafeBox<CmdVelType> rt_cmd_publisher_;
+  CmdVelType cmd_vel_;
+  rclcpp::Publisher<CmdVelType>::SharedPtr cmd_vel_publisher_;
+
 
   void computeTask(const Eigen::VectorXd& q, const pinocchio::SE3& X_des);
   void computeQP(const Eigen::VectorXd& q, double dt);

@@ -24,6 +24,8 @@ find_package(rsl REQUIRED)
 find_package(urdf REQUIRED)
 find_package(coal REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 generate_parameter_library(
     wb_cartesian_controller_parameters
@@ -54,6 +56,8 @@ target_link_libraries(wb_cartesian_controller PUBLIC
                       pinocchio::pinocchio
                       proxsuite::proxsuite
                       ${trajectory_msgs_TARGETS}
+                      ${nav_msgs_TARGETS}
+                      ${geometry_msgs_TARGETS}
                       ${control_msgs_TARGETS})
 
 pluginlib_export_plugin_description_file(controller_interface wb_cartesian_controller_plugin.xml)
